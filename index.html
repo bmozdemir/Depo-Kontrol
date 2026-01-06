@@ -59,19 +59,30 @@
     ));
 
     const Toast = memo(({ message, type = 'success', onClose }) => {
+      const [isVisible, setIsVisible] = React.useState(true);
+
       useEffect(() => {
-        const timer = setTimeout(onClose, 3000);
-        return () => clearTimeout(timer);
+        const fadeTimer = setTimeout(() => {
+          setIsVisible(false);
+        }, 4500);
+        
+        const closeTimer = setTimeout(onClose, 5000);
+        
+        return () => {
+          clearTimeout(fadeTimer);
+          clearTimeout(closeTimer);
+        };
       }, [onClose]);
 
-      const colors = { success: 'from-green-500 to-emerald-500', error: 'from-red-500 to-pink-500', warning: 'from-yellow-500 to-orange-500' };
-
       return (
-        <div className={`fixed top-4 right-4 z-50 bg-gradient-to-r ${colors[type]} text-white px-6 py-4 rounded-lg shadow-2xl`}>
+        <div 
+          className={`fixed top-4 right-4 z-50 bg-gradient-to-r from-green-500 to-emerald-500 bg-opacity-90 text-white px-6 py-4 rounded-lg shadow-2xl min-w-[380px] max-w-[480px] transition-all duration-500 ${isVisible ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-8'}`} 
+          style={{ backdropFilter: 'blur(8px)' }}
+        >
           <div className="flex items-center gap-3">
-            <span className="text-2xl">{type === 'success' ? '✅' : type === 'error' ? '❌' : '⚠️'}</span>
-            <p className="font-semibold">{message}</p>
-            <button onClick={onClose} className="ml-4">✕</button>
+            <span className="text-2xl">{type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'info' ? '⏳' : '⚠️'}</span>
+            <p className="font-semibold flex-1">{message}</p>
+            <button onClick={() => { setIsVisible(false); setTimeout(onClose, 300); }} className="ml-2 text-xl hover:scale-110 transition-transform">✕</button>
           </div>
         </div>
       );
@@ -107,7 +118,7 @@
       const cartItem = cart?.find(c => c.id === product.id);
       const entryItem = entryCart?.find(c => c.id === product.id);
       const availableStock = product.current_stock - (cartItem?.quantity || 0);
-      const isLowStock = availableStock <= product.min_stock;
+      const isLowStock = availableStock === 0 || (product.min_stock > 0 && availableStock <= product.min_stock);
       const isOutOfStock = availableStock <= 0;
 
       return (
@@ -280,7 +291,7 @@
       const [toast, setToast] = useState(null);
       const [stockMovement, setStockMovement] = useState({ quantity: 0, type: 'in', depot: '', shelf: '' });
       const [depots, setDepots] = useState([]);
-      const [productForm, setProductForm] = useState({ name: '', barcode: '', price: 0, min_stock: 10 });
+      const [productForm, setProductForm] = useState({ name: '', barcode: '', price: 0, min_stock: 0 });
 
       // DEPO YÖNETİMİ
       const [depotForm, setDepotForm] = useState({ name: '', location: '', description: '' });
@@ -323,7 +334,14 @@
       const fileRef = useRef(null);
       const priceFileRef = useRef(null);
 
-      const showToast = useCallback((msg, type = 'success') => setToast({ message: msg, type }), []);
+      const showToast = useCallback((msg, type = 'success') => {
+        setToast({ message: msg, type });
+      }, []);
+
+      const navigateToPage = useCallback((targetPage) => {
+        console.log('Navigating to:', targetPage);
+        setPage(targetPage);
+      }, []);
 
       // Auth fonksiyonları
       const handleLogin = async (e) => {
@@ -651,7 +669,7 @@
                     name: product.name,
                     barcode: product.barcode,
                     price: product.price,
-                    min_stock: product.min_stock ?? 10,
+                    min_stock: product.min_stock ?? 0,
                     current_stock: inv.quantity,
                     depot: inv.depot,
                     shelf: inv.shelf
@@ -699,7 +717,7 @@
                     name: product.name,
                     barcode: product.barcode,
                     price: product.price,
-                    min_stock: product.min_stock ?? 10,
+                    min_stock: product.min_stock ?? 0,
                     current_stock: inv.quantity,
                     depot: inv.depot,
                     shelf: inv.shelf
@@ -711,7 +729,7 @@
                   name: product.name,
                   barcode: product.barcode,
                   price: product.price,
-                  min_stock: product.min_stock ?? 10,
+                  min_stock: product.min_stock ?? 0,
                   current_stock: 0,
                   depot: null,
                   shelf: null
@@ -819,7 +837,7 @@
               name: product?.name || 'Bilinmeyen Ürün',
               barcode: product?.barcode,
               price: product?.price || 0,
-              min_stock: product?.min_stock ?? 10,
+              min_stock: product?.min_stock ?? 0,
               current_stock: inv.quantity,
               depot: inv.depot,
               shelf: inv.shelf
@@ -835,7 +853,7 @@
               name: p.name,
               barcode: p.barcode,
               price: p.price,
-              min_stock: p.min_stock ?? 10,
+              min_stock: p.min_stock ?? 0,
               current_stock: 0,
               depot: null,
               shelf: null
@@ -933,7 +951,6 @@
           const userId = (user?.id && user.id !== 'demo') ? user.id : null;
           const { data: sale, error: saleError } = await supabase.from('sales').insert({ 
             total_amount: tot, 
-            discount_percentage: discount,
             user_id: userId
           }).select().single();
           
@@ -1635,10 +1652,8 @@
             const processedBarcodes = new Set();
             
             let updatedCount = 0;
-            let addedCount = 0;
             let skippedCount = 0;
             let duplicateCount = 0;
-            const newProducts = [];
             const updatePromises = [];
             
             for (const row of rows) {
@@ -1675,20 +1690,8 @@
                   skippedCount++;
                 }
               } else {
-                // Ürün yok, yeni ekle (isim zorunlu)
-                if (name && price > 0) {
-                  const min_stock_raw = row['Min Stok'] ?? row.min_stock ?? row['min_stock'];
-                  const min_stock = (min_stock_raw !== undefined && min_stock_raw !== null && min_stock_raw !== '') 
-                    ? parseInt(min_stock_raw) 
-                    : 10;
-                  
-                  newProducts.push({ name, barcode, price, min_stock });
-                  // Yeni eklenen ürünü de map'e ekle (aynı Excel'de tekrar gelirse duplicate olmasın)
-                  barcodeMap.set(barcodeKey, { barcode, name, price });
-                  addedCount++;
-                } else {
-                  skippedCount++;
-                }
+                // Ürün bulunamadı, ekleme yapma
+                skippedCount++;
               }
             }
             
@@ -1698,26 +1701,12 @@
               await Promise.all(updatePromises);
             }
             
-            // Yeni ürünleri toplu ekle
-            if (newProducts.length > 0) {
-              showToast(`⏳ ${newProducts.length} yeni ürün ekleniyor...`, 'info');
-              const batchSize = 1000;
-              for (let i = 0; i < newProducts.length; i += batchSize) {
-                const batch = newProducts.slice(i, i + batchSize);
-                const { error } = await supabase.from('products').insert(batch);
-                if (error) {
-                  console.error('Batch insert hatası:', error);
-                }
-              }
-            }
-            
             // Sonuç mesajı
             let message = '✅ Fiyat güncelleme tamamlandı: ';
             const parts = [];
             if (updatedCount > 0) parts.push(`${updatedCount} güncellendi`);
-            if (addedCount > 0) parts.push(`${addedCount} yeni eklendi`);
             if (duplicateCount > 0) parts.push(`${duplicateCount} duplicate atlandı`);
-            if (skippedCount > 0) parts.push(`${skippedCount} atlandı`);
+            if (skippedCount > 0) parts.push(`${skippedCount} ürün bulunamadı/atlandı`);
             message += parts.join(', ');
             
             showToast(message, 'success');
@@ -2191,13 +2180,13 @@
               name: productForm.name,
               barcode: productForm.barcode,
               price: productForm.price,
-              min_stock: productForm.min_stock ?? 10
+              min_stock: productForm.min_stock ?? 0
             });
           }
           showToast('Ürün kaydedildi', 'success');
           setModal('');
           setSelected(null);
-          setProductForm({ name: '', barcode: '', price: 0, min_stock: 10 });
+          setProductForm({ name: '', barcode: '', price: 0, min_stock: 0 });
           loadProducts(true);
         } catch (err) {
           showToast('Kaydetme hatası: ' + err.message, 'error');
@@ -2747,7 +2736,12 @@
               <div className="flex justify-between items-center">
                 <div className="flex gap-2 flex-wrap">
                   {['home', 'entry', 'pos', 'products', 'sales', ...(user?.role === 'admin' ? ['reports', 'settings', 'admin'] : [])].map(p => (
-                    <button key={p} onClick={() => setPage(p)} className={`px-4 py-2 rounded-lg ${page === p ? 'bg-white text-blue-600' : 'text-white hover:bg-white/20'}`}>
+                    <button 
+                      key={p} 
+                      onClick={() => navigateToPage(p)} 
+                      className={`px-4 py-2 rounded-lg cursor-pointer ${page === p ? 'bg-white text-blue-600' : 'text-white hover:bg-white/20'}`}
+                      type="button"
+                    >
                       {p === 'home' ? '🏠 Ana' : p === 'entry' ? '📥 Stok Giriş' : p === 'pos' ? '💰 Satış' : p === 'products' ? '📦 Ürünler' : p === 'sales' ? '📊 Satışlar' : p === 'reports' ? '📈 Raporlar' : p === 'settings' ? '⚙️ Ayarlar' : '👑 Admin'}
                     </button>
                   ))}
@@ -2780,26 +2774,28 @@
                 </div>
 
                 {/* Giriş Sepeti Özeti */}
-                {entryCart.length > 0 && (
-                  <div className="bg-gradient-to-r from-teal-500 to-green-500 rounded-xl p-4 text-white shadow-lg">
-                    <div className="flex justify-between items-center">
-                      <div className="flex items-center gap-3">
-                        <DollyIcon size={40} color="white" />
-                        <div>
-                          <p className="font-bold">Giriş Sepeti: {entryCart.length} ürün, {entryCart.reduce((sum, i) => sum + i.quantity, 0)} adet</p>
-                          <p className="text-sm opacity-90">
-                            {entryDepot && entryShelf ? `📍 ${entryDepot} / ${entryShelf}` : '⚠️ Depo ve raf seçilmedi'}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => setPage('entry')} className="bg-white text-teal-600 px-4 py-2 rounded-lg hover:bg-gray-100 font-semibold">
-                          Stok Giriş Sayfasına Git →
-                        </button>
+                <div className={`bg-gradient-to-r from-teal-500 to-green-500 rounded-xl p-4 text-white shadow-lg transition-all duration-300 ${entryCart.length > 0 ? 'opacity-100 h-auto' : 'opacity-0 h-0 overflow-hidden pointer-events-none'}`}>
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-3">
+                      <DollyIcon size={40} color="white" />
+                      <div>
+                        <p className="font-bold">Giriş Sepeti: {entryCart.length} ürün, {entryCart.reduce((sum, i) => sum + i.quantity, 0)} adet</p>
+                        <p className="text-sm opacity-90">
+                          {entryDepot && entryShelf ? `📍 ${entryDepot} / ${entryShelf}` : '⚠️ Depo ve raf seçilmedi'}
+                        </p>
                       </div>
                     </div>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => navigateToPage('entry')} 
+                        className="bg-white text-teal-600 px-4 py-2 rounded-lg hover:bg-gray-100 font-semibold cursor-pointer"
+                        type="button"
+                      >
+                        Stok Giriş Sayfasına Git →
+                      </button>
+                    </div>
                   </div>
-                )}
+                </div>
 
                 {searchResults.length > 0 && (
                   <div className="bg-white rounded-xl shadow-lg p-6">
@@ -2835,7 +2831,7 @@
 
                     <div className="space-y-4">
                       {searchResults.map(p => (
-                        <ProductCard key={`${p.id}-${p.depot}-${p.shelf}`} product={p} cart={cart} entryCart={entryCart} onSelect={toggleProductSelection} onAddToCart={addToCart} onAddToEntry={addToEntryCart} onStock={(pr) => { setSelected(pr); setStockMovement({ quantity: 0, type: 'in' }); setModal('stockConfirm'); }} onTransfer={(pr) => { setSelected(pr); setTransferForm({ depot: '', shelf: '', quantity: pr.current_stock }); setModal('transfer'); }} onEdit={user?.role === 'admin' ? (pr) => { setSelected(pr); setProductForm({ name: pr.name, barcode: pr.barcode || '', price: pr.price, min_stock: pr.min_stock || 10 }); setModal('productForm'); } : null} onDelete={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDelete'); } : null} onDeleteProduct={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDeleteProduct'); } : null} isSelected={selectedProducts.includes(p.id)} />
+                        <ProductCard key={`${p.id}-${p.depot}-${p.shelf}`} product={p} cart={cart} entryCart={entryCart} onSelect={toggleProductSelection} onAddToCart={addToCart} onAddToEntry={addToEntryCart} onStock={(pr) => { setSelected(pr); setStockMovement({ quantity: 0, type: 'in' }); setModal('stockConfirm'); }} onTransfer={(pr) => { setSelected(pr); setTransferForm({ depot: '', shelf: '', quantity: pr.current_stock }); setModal('transfer'); }} onEdit={user?.role === 'admin' ? (pr) => { setSelected(pr); setProductForm({ name: pr.name, barcode: pr.barcode || '', price: pr.price, min_stock: pr.min_stock || 0 }); setModal('productForm'); } : null} onDelete={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDelete'); } : null} onDeleteProduct={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDeleteProduct'); } : null} isSelected={selectedProducts.includes(p.id)} />
                       ))}
                     </div>
                   </div>
@@ -2847,7 +2843,7 @@
               <div className="bg-white rounded-xl shadow-lg p-6">
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-2xl font-bold">📦 Ürünler ({totalProducts})</h2>
-                  <button onClick={() => { setProductForm({ name: '', barcode: '', price: 0, cost_price: 0, stock: 0, min_stock: 10, category_id: '', depot: '', shelf: '' }); setSelected(null); setModal('productForm'); }} className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 font-semibold">+ Yeni Ürün</button>
+                  <button onClick={() => { setProductForm({ name: '', barcode: '', price: 0, cost_price: 0, stock: 0, min_stock: 0, category_id: '', depot: '', shelf: '' }); setSelected(null); setModal('productForm'); }} className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 font-semibold">+ Yeni Ürün</button>
                 </div>
                 
                 {selectedProducts.length > 0 && (
@@ -2946,7 +2942,7 @@
                         <span className="text-sm text-gray-600">({selectedProducts.length} ürün seçildi)</span>
                       </div>
                       {filteredProducts.map(p => (
-                        <ProductCard key={`${p.id}-${p.depot}-${p.shelf}`} product={p} cart={cart} entryCart={entryCart} onSelect={toggleProductSelection} onAddToCart={addToCart} onAddToEntry={addToEntryCart} onStock={(pr) => { setSelected(pr); setStockMovement({ quantity: 0, type: 'in' }); setModal('stockConfirm'); }} onTransfer={(pr) => { setSelected(pr); setTransferForm({ depot: '', shelf: '', quantity: pr.current_stock }); setModal('transfer'); }} onEdit={user?.role === 'admin' ? (pr) => { setSelected(pr); setProductForm({ name: pr.name, barcode: pr.barcode || '', price: pr.price, min_stock: pr.min_stock || 10 }); setModal('productForm'); } : null} onDelete={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDelete'); } : null} onDeleteProduct={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDeleteProduct'); } : null} isSelected={selectedProducts.includes(p.id)} />
+                        <ProductCard key={`${p.id}-${p.depot}-${p.shelf}`} product={p} cart={cart} entryCart={entryCart} onSelect={toggleProductSelection} onAddToCart={addToCart} onAddToEntry={addToEntryCart} onStock={(pr) => { setSelected(pr); setStockMovement({ quantity: 0, type: 'in' }); setModal('stockConfirm'); }} onTransfer={(pr) => { setSelected(pr); setTransferForm({ depot: '', shelf: '', quantity: pr.current_stock }); setModal('transfer'); }} onEdit={user?.role === 'admin' ? (pr) => { setSelected(pr); setProductForm({ name: pr.name, barcode: pr.barcode || '', price: pr.price, min_stock: pr.min_stock || 0 }); setModal('productForm'); } : null} onDelete={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDelete'); } : null} onDeleteProduct={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDeleteProduct'); } : null} isSelected={selectedProducts.includes(p.id)} />
                       ))}
                       {/* Pagination sadece arama yokken göster */}
                       {searchResults.length === 0 && (
@@ -3770,14 +3766,14 @@
                 <div className="bg-white rounded-xl shadow-lg p-6">
                   <h3 className="text-xl font-bold mb-4">⚠️ Düşük Stok Uyarıları</h3>
                   <p className="text-sm text-gray-600 mb-4">Minimum stok seviyesinin altındaki ürünler</p>
-                  {products.filter(p => p.current_stock <= (p.min_stock || 10)).length === 0 ? (
+                  {products.filter(p => p.current_stock <= (p.min_stock || 0)).length === 0 ? (
                     <div className="text-center py-8">
                       <div className="text-5xl mb-4">✅</div>
                       <p className="text-green-600 font-semibold">Tüm ürünler yeterli stokta!</p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {products.filter(p => p.current_stock <= (p.min_stock || 10)).slice(0, 9).map(p => (
+                      {products.filter(p => p.current_stock <= (p.min_stock || 0)).slice(0, 9).map(p => (
                         <div key={p.id} className={`border-2 rounded-lg p-4 ${p.current_stock === 0 ? 'border-red-300 bg-red-50' : 'border-yellow-300 bg-yellow-50'}`}>
                           <div className="flex justify-between items-start">
                             <div>
@@ -3789,7 +3785,7 @@
                             </span>
                           </div>
                           <div className="mt-2 text-sm">
-                            <span className="text-gray-600">Min: {p.min_stock || 10}</span>
+                            <span className="text-gray-600">Min: {p.min_stock || 0}</span>
                             <span className="mx-2">•</span>
                             <span className={p.current_stock === 0 ? 'text-red-600 font-bold' : 'text-yellow-600 font-bold'}>
                               {p.current_stock === 0 ? 'Stok Tükendi!' : 'Düşük Stok'}
@@ -4056,7 +4052,7 @@
 
                 <div className="flex gap-3 mt-6">
                   <button onClick={saveProduct} className="flex-1 bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 font-bold">✅ Kaydet</button>
-                  <button onClick={() => { setModal(''); setSelected(null); setProductForm({ name: '', barcode: '', price: 0, min_stock: 10 }); }} className="flex-1 bg-gray-200 py-3 rounded-lg hover:bg-gray-300">İptal</button>
+                  <button onClick={() => { setModal(''); setSelected(null); setProductForm({ name: '', barcode: '', price: 0, min_stock: 0 }); }} className="flex-1 bg-gray-200 py-3 rounded-lg hover:bg-gray-300">İptal</button>
                 </div>
               </div>
             </div>
