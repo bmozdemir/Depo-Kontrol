@@ -103,7 +103,7 @@
       </div>
     ));
 
-    const ProductCard = memo(({ product, cart, entryCart, onSelect, onAddToCart, onAddToEntry, onStock, onEdit, onDelete, onTransfer, isSelected }) => {
+    const ProductCard = memo(({ product, cart, entryCart, onSelect, onAddToCart, onAddToEntry, onStock, onEdit, onDelete, onDeleteProduct, onTransfer, isSelected }) => {
       const cartItem = cart?.find(c => c.id === product.id);
       const entryItem = entryCart?.find(c => c.id === product.id);
       const availableStock = product.current_stock - (cartItem?.quantity || 0);
@@ -139,7 +139,8 @@
                   <button onClick={() => onStock(product)} title="Stok Giriş/Çıkış" className="bg-purple-500 text-white px-4 py-2 rounded-lg hover:bg-purple-600 font-semibold">📦</button>
                   {onTransfer && <button onClick={() => onTransfer(product)} title="Depolar Arası Taşı" className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 font-semibold">🚚</button>}
                   {onEdit && <button onClick={() => onEdit(product)} title="Düzenle" className="bg-orange-500 text-white px-4 py-2 rounded-lg hover:bg-orange-600 font-semibold">✏️</button>}
-                  {onDelete && <button onClick={() => onDelete(product)} title="Stoğu Sıfırla" className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 font-semibold">🔻</button>}
+                  {onDelete && <button onClick={() => onDelete(product)} title="Stoğu Sıfırla" className="bg-yellow-500 text-white px-4 py-2 rounded-lg hover:bg-yellow-600 font-semibold">🔻</button>}
+                  {onDeleteProduct && <button onClick={() => onDeleteProduct(product)} title="Ürünü Sil" className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 font-semibold">🗑️</button>}
                 </div>
               </div>
               
@@ -308,7 +309,10 @@
       // STOK GİRİŞ
       const [entryCart, setEntryCart] = useState([]);
       const [entryDepot, setEntryDepot] = useState('');
-      const [entryShelf, setEntryShelf] = useState('');
+      
+      // ADMIN - KULLANICI YÖNETİMİ
+      const [allUsers, setAllUsers] = useState([]);
+      const [loadingUsers, setLoadingUsers] = useState(false);      const [entryShelf, setEntryShelf] = useState('');
 
       // AUTH STATE
       const [authMode, setAuthMode] = useState('login'); // 'login' veya 'register'
@@ -368,44 +372,185 @@
             }
           });
           if (error) throw error;
+          
+          console.log('Auth kayıt başarılı:', data?.user?.id);
+          
+          // profiles tablosuna kayıt ekle
+          if (data?.user) {
+            try {
+              // İlk kullanıcı mı kontrol et
+              const { count } = await supabase
+                .from('profiles')
+                .select('*', { count: 'exact', head: true });
+              
+              const isFirstUser = count === 0 || count === null;
+              console.log('İlk kullanıcı mı:', isFirstUser, 'Mevcut sayı:', count);
+              
+              // Upsert kullan (varsa güncelle, yoksa ekle)
+              const { data: profileData, error: profileError } = await supabase
+                .from('profiles')
+                .upsert({
+                  id: data.user.id,
+                  email: pendingRegister.email,
+                  full_name: pendingRegister.fullName,
+                  role: isFirstUser ? 'admin' : 'user',
+                  is_approved: isFirstUser
+                }, { onConflict: 'id' })
+                .select();
+              
+              if (profileError) {
+                console.error('Profil kayıt hatası:', profileError);
+                showToast('Profil kaydedilemedi: ' + profileError.message, 'warning');
+              } else {
+                console.log('Profil kaydedildi:', profileData);
+              }
+            } catch (profileErr) {
+              console.error('Profil oluşturma hatası:', profileErr);
+              showToast('Profil hatası: ' + profileErr.message, 'warning');
+            }
+          }
+          
           showToast('✅ Kullanıcı oluşturuldu! Giriş yapabilirsiniz.', 'success');
           setAuthMode('login');
           setAuthForm({ email: pendingRegister.email, password: '', fullName: '' });
           setPendingRegister(null);
         } catch (err) {
+          console.error('Kayıt hatası:', err);
           showToast(err.message || 'Kayıt hatası', 'error');
         }
         setAuthLoading(false);
       };
 
       const handleLogout = async () => {
-        await supabase.auth.signOut();
-        setUser(null);
-        showToast('Çıkış yapıldı', 'success');
+        try {
+          // Supabase oturumu kapat
+          await supabase.auth.signOut();
+          
+          // Tüm cache'leri temizle
+          localStorage.clear();
+          sessionStorage.clear();
+          
+          // State'leri sıfırla
+          setUser(null);
+          setCart([]);
+          setProducts([]);
+          setSales([]);
+          setSearchResults([]);
+          setSelectedProducts([]);
+          
+          showToast('Çıkış yapıldı, sayfa yenileniyor...', 'success');
+          
+          // Sayfayı yenile (temiz başlangıç için)
+          setTimeout(() => {
+            window.location.reload();
+          }, 500);
+        } catch (err) {
+          console.error('Çıkış hatası:', err);
+          // Hata olsa bile sayfayı yenile
+          window.location.reload();
+        }
       };
 
       // Session kontrolü
       useEffect(() => {
         const checkSession = async () => {
-          const { data: { session } } = await supabase.auth.getSession();
-          if (session?.user) {
-            setUser({
-              id: session.user.id,
-              email: session.user.email,
-              full_name: session.user.user_metadata?.full_name || session.user.email.split('@')[0]
-            });
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            
+            if (session?.user) {
+              console.log('Session bulundu:', session.user.email);
+              
+              // Basit user objesi oluştur - varsayılan 'user' rolü
+              let userObj = {
+                id: session.user.id,
+                email: session.user.email,
+                full_name: session.user.user_metadata?.full_name || session.user.email.split('@')[0],
+                role: 'user', // Varsayılan user (admin değil!)
+                is_approved: true
+              };
+              
+              // Profiles'dan veri çekmeye çalış (rol için önemli!)
+              try {
+                const { data: profile, error } = await supabase
+                  .from('profiles')
+                  .select('full_name, role, is_approved')
+                  .eq('id', session.user.id)
+                  .single();
+                
+                if (profile && !error) {
+                  userObj = {
+                    ...userObj,
+                    full_name: profile.full_name || userObj.full_name,
+                    role: profile.role || 'user',
+                    is_approved: profile.is_approved ?? true
+                  };
+                  console.log('Profil bulundu:', profile);
+                } else {
+                  console.log('Profil bulunamadı, varsayılan user rolü kullanılıyor');
+                }
+              } catch (profileErr) {
+                console.log('Profil çekme hatası (devam ediliyor):', profileErr);
+              }
+              
+              setUser(userObj);
+            } else {
+              // Session yoksa cache'leri temizle
+              console.log('Session yok, cache temizleniyor');
+              localStorage.clear();
+              sessionStorage.clear();
+              setUser(null);
+            }
+          } catch (err) {
+            console.error('Session hatası:', err);
+            // Hata durumunda da cache temizle
+            localStorage.clear();
+            sessionStorage.clear();
           }
+          
           setInitialLoading(false);
         };
+        
         checkSession();
 
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+          console.log('Auth değişti:', event);
+          
+          if (event === 'SIGNED_OUT') {
+            // Çıkış yapıldığında cache temizle
+            localStorage.clear();
+            sessionStorage.clear();
+            setUser(null);
+            return;
+          }
+          
           if (session?.user) {
-            setUser({
+            // Varsayılan user objesi
+            let userObj = {
               id: session.user.id,
               email: session.user.email,
-              full_name: session.user.user_metadata?.full_name || session.user.email.split('@')[0]
-            });
+              full_name: session.user.user_metadata?.full_name || session.user.email.split('@')[0],
+              role: 'user', // Varsayılan user
+              is_approved: true
+            };
+            
+            // Profile'dan rol çek
+            try {
+              const { data: profile } = await supabase
+                .from('profiles')
+                .select('full_name, role, is_approved')
+                .eq('id', session.user.id)
+                .single();
+              
+              if (profile) {
+                userObj.full_name = profile.full_name || userObj.full_name;
+                userObj.role = profile.role || 'user';
+                userObj.is_approved = profile.is_approved ?? true;
+              }
+            } catch (e) {
+              console.log('Profile çekilemedi:', e);
+            }
+            
+            setUser(userObj);
           } else {
             setUser(null);
           }
@@ -428,183 +573,173 @@
 
       const loadData = useCallback(async () => {
         try {
-          const [cat, dep, shv, prof] = await Promise.all([
-            supabase.from('categories').select('*'),
-            supabase.from('depots').select('*'),
-            supabase.from('shelves').select('*'),
-            supabase.from('profiles').select('*')
+          // Paralel sorgular - sadece gerekli veriler
+          const [dep, shv, salesResult] = await Promise.all([
+            supabase.from('depots').select('id, name, location'),
+            supabase.from('shelves').select('id, name, depot_id'),
+            supabase.from('sales')
+              .select('id, total_amount, created_at, user_id, sale_items(quantity, total, products(name))')
+              .order('created_at', { ascending: false })
+              .limit(50)
           ]);
-          setCategories(cat.data || []);
+          
           setDepots(dep.data || []);
           setShelves(shv.data || []);
-          
-          const profilesMap = {};
-          (prof.data || []).forEach(p => { profilesMap[p.id] = p; });
-          
-          // Satışları çek
-          const { data: salesData, error: salesError } = await supabase
-            .from('sales')
-            .select('*, sale_items(*, products(*))')
-            .order('created_at', { ascending: false })
-            .limit(100);
-          
-          if (salesError) {
-            console.error('Satış yükleme hatası:', salesError);
-          }
-          
-          // Satışlara profil bilgisi ekle
-          const salesWithProfiles = (salesData || []).map(sale => ({
-            ...sale,
-            profiles: profilesMap[sale.user_id] || null
-          }));
-          
-          setSales(salesWithProfiles);
+          setSales(salesResult.data || []);
           
         } catch (err) {
           console.error('Veri yükleme hatası:', err);
         }
       }, []);
 
-      // Ürünleri yükle (products + inventory birleşik)
+      // Ürünleri yükle (OPTIMIZED - sunucu tarafı filtreleme)
       const loadProducts = useCallback(async (alsoRefreshSearch = false) => {
         setLoading(true);
         try {
-          // Tüm ürünleri çek (pagination ile)
-          let allProductsData = [];
-          let page = 0;
-          const pageSize = 1000;
+          const from = (currentPage - 1) * itemsPerPage;
+          const to = from + itemsPerPage - 1;
           
-          while (true) {
-            const { data, error } = await supabase
-              .from('products')
-              .select('*')
-              .order('name')
-              .range(page * pageSize, (page + 1) * pageSize - 1);
-            
-            if (error) {
-              console.error('Products hatası:', error);
-              break;
-            }
-            
-            if (!data || data.length === 0) break;
-            allProductsData = [...allProductsData, ...data];
-            
-            if (data.length < pageSize) break; // Son sayfa
-            page++;
-          }
+          let productsData = [];
+          let totalCount = 0;
           
-          console.log('📦 loadProducts - Products:', allProductsData.length, 'adet');
-          
-          // Tüm inventory'yi çek (pagination ile)
-          let allInventoryData = [];
-          page = 0;
-          
-          while (true) {
-            const { data, error } = await supabase
-              .from('inventory')
-              .select('*')
-              .range(page * pageSize, (page + 1) * pageSize - 1);
-            
-            if (error) {
-              console.error('Inventory hatası:', error);
-              break;
-            }
-            
-            if (!data || data.length === 0) break;
-            allInventoryData = [...allInventoryData, ...data];
-            
-            if (data.length < pageSize) break;
-            page++;
-          }
-          
-          console.log('📦 loadProducts - Inventory:', allInventoryData.length, 'adet');
-          
-          const productsData = allProductsData;
-          const inventoryData = allInventoryData;
-          
-          // Inventory'yi ürünlerle birleştir
-          const inventoryWithProducts = (inventoryData || []).map(inv => {
-            const product = (productsData || []).find(p => p.id === inv.product_id);
-            return {
-              ...inv,
-              inventory_id: inv.id,
-              id: inv.product_id,
-              name: product?.name || 'Bilinmeyen Ürün',
-              barcode: product?.barcode,
-              price: product?.price || 0,
-              min_stock: product?.min_stock ?? 10,
-              current_stock: inv.quantity,
-              depot: inv.depot,
-              shelf: inv.shelf
-            };
-          });
-          
-          // Inventory'de olmayan ürünleri de ekle (stoksuz ürünler)
-          const productIdsInInventory = new Set((inventoryData || []).map(inv => inv.product_id));
-          const productsWithoutInventory = (productsData || [])
-            .filter(p => !productIdsInInventory.has(p.id))
-            .map(p => ({
-              id: p.id,
-              name: p.name,
-              barcode: p.barcode,
-              price: p.price,
-              min_stock: p.min_stock ?? 10,
-              current_stock: 0,
-              depot: null,
-              shelf: null
-            }));
-          
-          // Tüm ürünleri birleştir
-          let allProducts = [...inventoryWithProducts, ...productsWithoutInventory];
-          
-          // Depo filtresi
-          if (depotFilter !== 'all') {
-            allProducts = allProducts.filter(p => p.depot === depotFilter);
-          }
-          
-          // Stok filtresi
           if (showOnlyInStock) {
-            allProducts = allProducts.filter(p => p.current_stock > 0);
+            // STOKTA OLANLAR - inventory'den başla
+            const { data: inventoryData, error: invError } = await supabase
+              .from('inventory')
+              .select('product_id, quantity, depot, shelf')
+              .gt('quantity', 0);
+            
+            if (invError) {
+              console.error('Inventory hatası:', invError);
+              setLoading(false);
+              return;
+            }
+            
+            // Depo filtresi
+            let filteredInventory = inventoryData || [];
+            if (depotFilter !== 'all') {
+              filteredInventory = filteredInventory.filter(inv => inv.depot === depotFilter);
+            }
+            
+            // Unique product ID'leri al
+            const productIds = [...new Set(filteredInventory.map(inv => inv.product_id))];
+            totalCount = productIds.length;
+            
+            // Sayfalama için product ID'leri
+            const pagedProductIds = productIds.slice(from, to + 1);
+            
+            if (pagedProductIds.length > 0) {
+              // Bu ürünlerin bilgilerini çek
+              const { data: prods } = await supabase
+                .from('products')
+                .select('id, name, barcode, price, min_stock')
+                .in('id', pagedProductIds);
+              
+              // Inventory map
+              const inventoryMap = {};
+              filteredInventory.forEach(inv => {
+                if (!inventoryMap[inv.product_id]) inventoryMap[inv.product_id] = [];
+                inventoryMap[inv.product_id].push(inv);
+              });
+              
+              // Ürünleri birleştir
+              (prods || []).forEach(product => {
+                const inventories = inventoryMap[product.id] || [];
+                inventories.forEach(inv => {
+                  productsData.push({
+                    id: product.id,
+                    name: product.name,
+                    barcode: product.barcode,
+                    price: product.price,
+                    min_stock: product.min_stock ?? 10,
+                    current_stock: inv.quantity,
+                    depot: inv.depot,
+                    shelf: inv.shelf
+                  });
+                });
+              });
+            }
+          } else {
+            // TÜMÜ - products'tan başla
+            let query = supabase
+              .from('products')
+              .select('id, name, barcode, price, min_stock')
+              .order('name')
+              .range(from, to);
+            
+            const [productsResult, countResult, inventoryResult] = await Promise.all([
+              query,
+              supabase.from('products').select('*', { count: 'exact', head: true }),
+              supabase.from('inventory').select('product_id, quantity, depot, shelf')
+            ]);
+            
+            const prods = productsResult.data || [];
+            totalCount = countResult.count || 0;
+            const invData = inventoryResult.data || [];
+            
+            // Inventory map
+            const inventoryMap = {};
+            invData.forEach(inv => {
+              if (!inventoryMap[inv.product_id]) inventoryMap[inv.product_id] = [];
+              inventoryMap[inv.product_id].push(inv);
+            });
+            
+            // Depo filtresi ve birleştirme
+            prods.forEach(product => {
+              let inventories = inventoryMap[product.id] || [];
+              
+              if (depotFilter !== 'all') {
+                inventories = inventories.filter(inv => inv.depot === depotFilter);
+              }
+              
+              if (inventories.length > 0) {
+                inventories.forEach(inv => {
+                  productsData.push({
+                    id: product.id,
+                    name: product.name,
+                    barcode: product.barcode,
+                    price: product.price,
+                    min_stock: product.min_stock ?? 10,
+                    current_stock: inv.quantity,
+                    depot: inv.depot,
+                    shelf: inv.shelf
+                  });
+                });
+              } else {
+                productsData.push({
+                  id: product.id,
+                  name: product.name,
+                  barcode: product.barcode,
+                  price: product.price,
+                  min_stock: product.min_stock ?? 10,
+                  current_stock: 0,
+                  depot: null,
+                  shelf: null
+                });
+              }
+            });
           }
           
           // İsme göre sırala
-          allProducts.sort((a, b) => a.name.localeCompare(b.name));
+          productsData.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
           
-          // Sayfalama
-          const total = allProducts.length;
-          const from = (currentPage - 1) * itemsPerPage;
-          const to = from + itemsPerPage;
-          const paged = allProducts.slice(from, to);
+          console.log('📦 Sayfa:', currentPage, '- Ürün:', productsData.length, '/ Toplam:', totalCount);
           
-          setProducts(paged);
-          setTotalProducts(total);
+          setProducts(productsData);
+          setTotalProducts(totalCount);
           
-          // Inventory'yi fiyat bilgisiyle birlikte kaydet (stats için)
-          const inventoryWithPrices = (inventoryData || []).map(inv => {
-            const product = (productsData || []).find(p => p.id === inv.product_id);
-            return { ...inv, price: product?.price || 0 };
-          });
-          setInventory(inventoryWithPrices);
-          
-          // Arama sonuçlarını güncelle
-          if (alsoRefreshSearch && search.trim()) {
-            const searchLower = search.toLowerCase();
-            const searchFiltered = allProducts.filter(p => 
-              p.name?.toLowerCase().includes(searchLower) || 
-              p.barcode?.toLowerCase().includes(searchLower)
-            );
-            setSearchResults(searchFiltered.slice(0, 50));
-          }
+          // Stats için tüm inventory
+          const { data: allInv } = await supabase.from('inventory').select('quantity, product_id');
+          setInventory(allInv || []);
           
         } catch (err) {
           console.error('Ürün yükleme hatası:', err);
-          showToast('Ürün yükleme hatası', 'error');
         }
         setLoading(false);
-      }, [depotFilter, showOnlyInStock, currentPage, itemsPerPage, search]);
+      }, [currentPage, itemsPerPage, depotFilter, showOnlyInStock]);
 
       const performSearch = useCallback(async (term, silent = false) => {
-        const searchTerm = term ? term.trim() : '';
+        const searchTerm = term ? term.trim().toLowerCase() : '';
         if (!searchTerm || searchTerm.length < 2) {
           if (!silent && searchTerm.length > 0 && searchTerm.length < 2) {
             showToast('En az 2 karakter girin', 'warning');
@@ -613,41 +748,63 @@
           setSearching(false);
           return;
         }
+        
+        // Türkçe varyasyonları oluştur (i↔İ, ı↔I, ö↔Ö, ü↔Ü, ş↔Ş, ğ↔Ğ, ç↔Ç)
+        const searchVariants = [searchTerm];
+        
+        // i → İ varyasyonu
+        if (searchTerm.includes('i')) {
+          searchVariants.push(searchTerm.replace(/i/g, 'İ'));
+        }
+        // İ → i varyasyonu  
+        if (searchTerm.includes('İ') || searchTerm.includes('ı')) {
+          searchVariants.push(searchTerm.replace(/[İı]/gi, 'i'));
+        }
+        
         setSearching(true);
         try {
-          console.log('🔍 Arama başladı:', searchTerm);
+          console.log('🔍 Arama:', searchVariants);
           
-          // Tüm DB'den arama (limit yok)
-          const { data: productsData, error: prodError } = await supabase
-            .from('products')
-            .select('*')
-            .or(`name.ilike.%${searchTerm}%,barcode.ilike.%${searchTerm}%`)
-            .order('name');
+          // Her varyant için arama yap
+          let allProducts = [];
           
-          if (prodError) {
-            console.error('Arama hatası:', prodError);
-            if (!silent) showToast('Arama hatası', 'error');
-            setSearching(false);
-            return;
+          for (const variant of searchVariants) {
+            const { data: byName } = await supabase
+              .from('products')
+              .select('id, name, barcode, price, min_stock')
+              .ilike('name', `%${variant}%`)
+              .limit(100);
+            
+            const { data: byBarcode } = await supabase
+              .from('products')
+              .select('id, name, barcode, price, min_stock')
+              .ilike('barcode', `%${variant}%`)
+              .limit(100);
+            
+            if (byName) allProducts.push(...byName);
+            if (byBarcode) allProducts.push(...byBarcode);
           }
           
-          console.log('📦 Bulunan ürün:', productsData?.length || 0);
+          // Duplicate'leri kaldır
+          const uniqueMap = new Map();
+          allProducts.forEach(p => uniqueMap.set(p.id, p));
+          const productsData = Array.from(uniqueMap.values());
+          
+          // İsme göre sırala
+          productsData.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'tr'));
+          
+          console.log('📦 Bulunan ürün:', productsData.length);
           
           // Bu ürünlerin inventory bilgilerini çek
           const productIds = (productsData || []).map(p => p.id);
           
           let inventoryData = [];
           if (productIds.length > 0) {
-            // Batch halinde inventory çek (Supabase limiti için)
-            const batchSize = 500;
-            for (let i = 0; i < productIds.length; i += batchSize) {
-              const batch = productIds.slice(i, i + batchSize);
-              const { data: invData } = await supabase
-                .from('inventory')
-                .select('*')
-                .in('product_id', batch);
-              if (invData) inventoryData = [...inventoryData, ...invData];
-            }
+            const { data: invData } = await supabase
+              .from('inventory')
+              .select('product_id, quantity, depot, shelf')
+              .in('product_id', productIds);
+            inventoryData = invData || [];
           }
           
           console.log('📦 Inventory:', inventoryData.length);
@@ -684,12 +841,12 @@
               shelf: null
             }));
           
-          const allResults = [...inventoryWithProducts, ...productsWithoutInventory];
+          const finalResults = [...inventoryWithProducts, ...productsWithoutInventory];
           
-          console.log('✅ Toplam sonuç:', allResults.length);
+          console.log('✅ Toplam sonuç:', finalResults.length);
           
-          setSearchResults(allResults);
-          if (allResults.length === 0 && !silent) {
+          setSearchResults(finalResults);
+          if (finalResults.length === 0 && !silent) {
             showToast('Sonuç bulunamadı', 'warning');
           }
         } catch (err) {
@@ -1709,6 +1866,239 @@
         console.log('=== DUPLICATE TEMİZLEME BİTTİ ===');
       }, [loadProducts]);
 
+      // ADMIN FONKSİYONLARI
+      const loadUsers = useCallback(async () => {
+        if (user?.role !== 'admin') return;
+        setLoadingUsers(true);
+        try {
+          const { data, error } = await supabase
+            .from('profiles')
+            .select('*')
+            .order('created_at', { ascending: false });
+          
+          if (error) {
+            console.error('Kullanıcı yükleme hatası:', error);
+            // Tablo yoksa boş liste göster
+            if (error.code === '42P01' || error.message.includes('does not exist')) {
+              showToast('profiles tablosu bulunamadı. SQL\'i çalıştırın.', 'warning');
+              setAllUsers([]);
+            } else {
+              showToast('Kullanıcı listesi yüklenemedi: ' + error.message, 'error');
+            }
+          } else {
+            setAllUsers(data || []);
+          }
+        } catch (err) {
+          console.error('Kullanıcı yükleme hatası:', err);
+          showToast('Kullanıcı listesi yüklenemedi', 'error');
+          setAllUsers([]);
+        }
+        setLoadingUsers(false);
+      }, [user?.role]);
+
+      const approveUser = useCallback(async (userId, approved) => {
+        try {
+          const { error } = await supabase
+            .from('profiles')
+            .update({ is_approved: approved })
+            .eq('id', userId);
+          
+          if (error) throw error;
+          showToast(approved ? '✅ Kullanıcı onaylandı' : '❌ Kullanıcı reddedildi', 'success');
+          loadUsers();
+        } catch (err) {
+          showToast('Hata: ' + err.message, 'error');
+        }
+      }, [loadUsers]);
+
+      const changeUserRole = useCallback(async (userId, newRole) => {
+        try {
+          const { error } = await supabase
+            .from('profiles')
+            .update({ role: newRole })
+            .eq('id', userId);
+          
+          if (error) throw error;
+          showToast(`✅ Kullanıcı rolü "${newRole}" olarak güncellendi`, 'success');
+          loadUsers();
+        } catch (err) {
+          showToast('Hata: ' + err.message, 'error');
+        }
+      }, [loadUsers]);
+
+      const deleteUser = useCallback(async (userId) => {
+        try {
+          const { error } = await supabase
+            .from('profiles')
+            .delete()
+            .eq('id', userId);
+          
+          if (error) throw error;
+          showToast('✅ Kullanıcı silindi', 'success');
+          loadUsers();
+        } catch (err) {
+          showToast('Hata: ' + err.message, 'error');
+        }
+      }, [loadUsers]);
+
+      // ADMIN - TEHLİKELİ İŞLEMLER
+      const deleteAllProducts = useCallback(async () => {
+        if (user?.role !== 'admin') return showToast('Yetkiniz yok', 'error');
+        
+        try {
+          showToast('⏳ Tüm ürünler siliniyor...', 'info');
+          
+          // Önce inventory'yi sil
+          const { error: invError } = await supabase.from('inventory').delete().not('id', 'is', null);
+          if (invError) console.error('Inventory silme hatası:', invError);
+          
+          // Sonra ürünleri sil
+          const { error: prodError } = await supabase.from('products').delete().not('id', 'is', null);
+          if (prodError) throw prodError;
+          
+          showToast('✅ Tüm ürünler silindi', 'success');
+          loadProducts(true);
+        } catch (err) {
+          showToast('Hata: ' + err.message, 'error');
+        }
+      }, [user?.role, loadProducts]);
+
+      const deleteAllSales = useCallback(async () => {
+        if (user?.role !== 'admin') return showToast('Yetkiniz yok', 'error');
+        
+        try {
+          showToast('⏳ Tüm satışlar siliniyor...', 'info');
+          
+          // Önce satış kalemlerini sil
+          const { error: itemsError } = await supabase.from('sale_items').delete().not('id', 'is', null);
+          if (itemsError) console.error('Satış kalemleri silme hatası:', itemsError);
+          
+          // Sonra satışları sil
+          const { error: salesError } = await supabase.from('sales').delete().not('id', 'is', null);
+          if (salesError) throw salesError;
+          
+          showToast('✅ Tüm satışlar silindi', 'success');
+          loadData();
+        } catch (err) {
+          showToast('Hata: ' + err.message, 'error');
+        }
+      }, [user?.role, loadData]);
+
+      const deleteAllInventory = useCallback(async () => {
+        if (user?.role !== 'admin') return showToast('Yetkiniz yok', 'error');
+        
+        try {
+          showToast('⏳ Tüm stoklar siliniyor...', 'info');
+          
+          const { error } = await supabase.from('inventory').delete().not('id', 'is', null);
+          if (error) throw error;
+          
+          showToast('✅ Tüm stoklar silindi (ürünler kaldı)', 'success');
+          loadProducts(true);
+        } catch (err) {
+          showToast('Hata: ' + err.message, 'error');
+        }
+      }, [user?.role, loadProducts]);
+
+      const resetAllData = useCallback(async () => {
+        if (user?.role !== 'admin') return showToast('Yetkiniz yok', 'error');
+        
+        try {
+          showToast('⏳ Tüm veriler sıfırlanıyor...', 'info');
+          
+          // Sırayla tüm tabloları temizle
+          await supabase.from('sale_items').delete().not('id', 'is', null);
+          await supabase.from('sales').delete().not('id', 'is', null);
+          await supabase.from('inventory').delete().not('id', 'is', null);
+          await supabase.from('products').delete().not('id', 'is', null);
+          await supabase.from('shelves').delete().not('id', 'is', null);
+          await supabase.from('depots').delete().not('id', 'is', null);
+          
+          showToast('✅ Tüm veriler sıfırlandı', 'success');
+          loadData();
+        } catch (err) {
+          showToast('Hata: ' + err.message, 'error');
+        }
+      }, [user?.role, loadData]);
+
+      // TEKİL ÜRÜN KALICI SİLME (Admin)
+      const deleteProductPermanent = useCallback(async (product) => {
+        if (user?.role !== 'admin') return showToast('Yetkiniz yok', 'error');
+        
+        try {
+          // Önce inventory'den sil
+          await supabase.from('inventory').delete().eq('product_id', product.id);
+          
+          // Sonra ürünü sil
+          const { error } = await supabase.from('products').delete().eq('id', product.id);
+          if (error) throw error;
+          
+          showToast(`✅ "${product.name}" kalıcı olarak silindi`, 'success');
+          setModal('');
+          loadProducts(true);
+        } catch (err) {
+          showToast('Hata: ' + err.message, 'error');
+        }
+      }, [user?.role, loadProducts]);
+
+      // TOPLU ÜRÜN KALICI SİLME (Admin)
+      const deleteSelectedProductsPermanent = useCallback(async () => {
+        if (user?.role !== 'admin') return showToast('Yetkiniz yok', 'error');
+        if (selectedProducts.length === 0) return;
+        
+        try {
+          showToast(`⏳ ${selectedProducts.length} ürün siliniyor...`, 'info');
+          
+          // Batch halinde sil
+          const batchSize = 50;
+          let deletedCount = 0;
+          
+          for (let i = 0; i < selectedProducts.length; i += batchSize) {
+            const batch = selectedProducts.slice(i, i + batchSize);
+            
+            // Önce inventory'den sil
+            await supabase.from('inventory').delete().in('product_id', batch);
+            
+            // Sonra ürünleri sil
+            const { error } = await supabase.from('products').delete().in('id', batch);
+            if (!error) deletedCount += batch.length;
+          }
+          
+          showToast(`✅ ${deletedCount} ürün kalıcı olarak silindi`, 'success');
+          setSelectedProducts([]);
+          setModal('');
+          loadProducts(true);
+        } catch (err) {
+          showToast('Hata: ' + err.message, 'error');
+        }
+      }, [user?.role, selectedProducts, loadProducts]);
+
+      // TEKİL SATIŞ SİLME (Admin)
+      const deleteSale = useCallback(async (saleId) => {
+        if (user?.role !== 'admin') return showToast('Yetkiniz yok', 'error');
+        
+        try {
+          // Önce satış kalemlerini sil
+          await supabase.from('sale_items').delete().eq('sale_id', saleId);
+          
+          // Sonra satışı sil
+          const { error } = await supabase.from('sales').delete().eq('id', saleId);
+          if (error) throw error;
+          
+          showToast('✅ Satış silindi', 'success');
+          loadData();
+        } catch (err) {
+          showToast('Hata: ' + err.message, 'error');
+        }
+      }, [user?.role, loadData]);
+
+      // Admin sayfasına geçince kullanıcıları yükle
+      useEffect(() => {
+        if (page === 'admin' && user?.role === 'admin') {
+          loadUsers();
+        }
+      }, [page, user?.role, loadUsers]);
+
       const saveProduct = useCallback(async () => {
         if (!productForm.name || productForm.price <= 0) return showToast('Ad ve fiyat gerekli', 'warning');
         
@@ -2264,7 +2654,7 @@
               
               <div className="mt-6 pt-6 border-t">
                 <button 
-                  onClick={() => setUser({ id: 'demo', email: 'demo@test.com', full_name: 'Demo Kullanıcı' })}
+                  onClick={() => setUser({ id: 'demo', email: 'demo@test.com', full_name: 'Demo Kullanıcı', role: 'admin', is_approved: true })}
                   className="w-full bg-gray-100 text-gray-700 py-3 rounded-lg hover:bg-gray-200 font-semibold"
                 >
                   🎮 Demo ile Dene
@@ -2320,6 +2710,34 @@
 
       if (loading) return <LoadingSpinner />;
 
+      // Onay bekleyen kullanıcılara bekle ekranı göster
+      if (user && !user.is_approved && user.id !== 'demo') {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-yellow-100 to-orange-100 flex items-center justify-center p-4">
+            {toast && <Toast {...toast} onClose={() => setToast(null)} />}
+            <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md text-center">
+              <div className="text-6xl mb-4">⏳</div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">Onay Bekleniyor</h2>
+              <p className="text-gray-600 mb-4">
+                Hesabınız yönetici onayı bekliyor. Onaylandıktan sonra sisteme erişebilirsiniz.
+              </p>
+              <div className="bg-yellow-50 border-2 border-yellow-200 rounded-lg p-4 mb-4">
+                <p className="text-sm text-yellow-800">
+                  <strong>👤 {user.full_name}</strong><br />
+                  {user.email}
+                </p>
+              </div>
+              <button 
+                onClick={handleLogout}
+                className="bg-gray-500 text-white px-6 py-3 rounded-lg hover:bg-gray-600 font-semibold"
+              >
+                🚪 Çıkış Yap
+              </button>
+            </div>
+          </div>
+        );
+      }
+
       return (
         <div className="min-h-screen bg-gray-100">
           {toast && <Toast {...toast} onClose={() => setToast(null)} />}
@@ -2328,14 +2746,14 @@
             <div className="max-w-7xl mx-auto px-6 py-4">
               <div className="flex justify-between items-center">
                 <div className="flex gap-2 flex-wrap">
-                  {['home', 'entry', 'pos', 'products', 'sales', 'reports', 'settings'].map(p => (
+                  {['home', 'entry', 'pos', 'products', 'sales', ...(user?.role === 'admin' ? ['reports', 'settings', 'admin'] : [])].map(p => (
                     <button key={p} onClick={() => setPage(p)} className={`px-4 py-2 rounded-lg ${page === p ? 'bg-white text-blue-600' : 'text-white hover:bg-white/20'}`}>
-                      {p === 'home' ? '🏠 Ana' : p === 'entry' ? '📥 Stok Giriş' : p === 'pos' ? '💰 Satış' : p === 'products' ? '📦 Ürünler' : p === 'sales' ? '📊 Satışlar' : p === 'reports' ? '📈 Raporlar' : '⚙️ Ayarlar'}
+                      {p === 'home' ? '🏠 Ana' : p === 'entry' ? '📥 Stok Giriş' : p === 'pos' ? '💰 Satış' : p === 'products' ? '📦 Ürünler' : p === 'sales' ? '📊 Satışlar' : p === 'reports' ? '📈 Raporlar' : p === 'settings' ? '⚙️ Ayarlar' : '👑 Admin'}
                     </button>
                   ))}
                 </div>
                 <div className="flex items-center gap-4">
-                  <span className="text-white">👤 {user.full_name}</span>
+                  <span className="text-white">👤 {user.full_name} {user?.role === 'admin' && <span className="bg-yellow-400 text-yellow-900 text-xs px-2 py-0.5 rounded-full ml-1">Admin</span>}</span>
                   <button onClick={handleLogout} className="bg-white/20 text-white px-4 py-2 rounded-lg hover:bg-white/30 font-semibold">🚪 Çıkış</button>
                 </div>
               </div>
@@ -2417,7 +2835,7 @@
 
                     <div className="space-y-4">
                       {searchResults.map(p => (
-                        <ProductCard key={`${p.id}-${p.depot}-${p.shelf}`} product={p} cart={cart} entryCart={entryCart} onSelect={toggleProductSelection} onAddToCart={addToCart} onAddToEntry={addToEntryCart} onStock={(pr) => { setSelected(pr); setStockMovement({ quantity: 0, type: 'in' }); setModal('stockConfirm'); }} onTransfer={(pr) => { setSelected(pr); setTransferForm({ depot: '', shelf: '', quantity: pr.current_stock }); setModal('transfer'); }} onEdit={(pr) => { setSelected(pr); setProductForm({ name: pr.name, barcode: pr.barcode || '', price: pr.price, min_stock: pr.min_stock || 10 }); setModal('productForm'); }} onDelete={(pr) => { setSelected(pr); setModal('confirmDelete'); }} isSelected={selectedProducts.includes(p.id)} />
+                        <ProductCard key={`${p.id}-${p.depot}-${p.shelf}`} product={p} cart={cart} entryCart={entryCart} onSelect={toggleProductSelection} onAddToCart={addToCart} onAddToEntry={addToEntryCart} onStock={(pr) => { setSelected(pr); setStockMovement({ quantity: 0, type: 'in' }); setModal('stockConfirm'); }} onTransfer={(pr) => { setSelected(pr); setTransferForm({ depot: '', shelf: '', quantity: pr.current_stock }); setModal('transfer'); }} onEdit={user?.role === 'admin' ? (pr) => { setSelected(pr); setProductForm({ name: pr.name, barcode: pr.barcode || '', price: pr.price, min_stock: pr.min_stock || 10 }); setModal('productForm'); } : null} onDelete={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDelete'); } : null} onDeleteProduct={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDeleteProduct'); } : null} isSelected={selectedProducts.includes(p.id)} />
                       ))}
                     </div>
                   </div>
@@ -2427,20 +2845,26 @@
 
             {page === 'products' && (
               <div className="bg-white rounded-xl shadow-lg p-6">
-                <div className="flex justify-between mb-6">
+                <div className="flex justify-between items-center mb-4">
                   <h2 className="text-2xl font-bold">📦 Ürünler ({totalProducts})</h2>
-                  <div className="flex gap-2 flex-wrap">
-                    {selectedProducts.length > 0 && (
+                  <button onClick={() => { setProductForm({ name: '', barcode: '', price: 0, cost_price: 0, stock: 0, min_stock: 10, category_id: '', depot: '', shelf: '' }); setSelected(null); setModal('productForm'); }} className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 font-semibold">+ Yeni Ürün</button>
+                </div>
+                
+                {selectedProducts.length > 0 && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 flex gap-2 flex-wrap items-center">
+                    <span className="font-semibold text-blue-700">{selectedProducts.length} ürün seçildi:</span>
+                    <button onClick={() => { setBulkStockForm({ depot: '', shelf: '', quantity: 0 }); setModal('bulkStock'); }} className="bg-green-500 text-white px-3 py-1.5 rounded-lg hover:bg-green-600 font-semibold text-sm">📦 Stok Ekle</button>
+                    <button onClick={() => { setTransferForm({ depot: '', shelf: '', quantity: 0 }); setModal('transferSelected'); }} className="bg-blue-500 text-white px-3 py-1.5 rounded-lg hover:bg-blue-600 font-semibold text-sm">🚚 Taşı</button>
+                    {user?.role === 'admin' && (
                       <>
-                        <button onClick={() => { setBulkStockForm({ depot: '', shelf: '', quantity: 0 }); setModal('bulkStock'); }} className="bg-green-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 font-semibold" title="Seçili Ürünlere Toplu Stok Ekle">📦 Stok Ekle ({selectedProducts.length})</button>
-                        <button onClick={() => { setTransferForm({ depot: '', shelf: '', quantity: 0 }); setModal('transferSelected'); }} className="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 font-semibold" title="Seçili Ürünleri Taşı">🚚 Taşı ({selectedProducts.length})</button>
-                        <button onClick={() => setModal('confirmDeleteSelected')} className="bg-red-500 text-white px-6 py-3 rounded-lg hover:bg-red-600 font-semibold" title="Seçili Ürünlerin Stoğunu Sıfırla">🔻 Sıfırla ({selectedProducts.length})</button>
-                        <button onClick={printSelectedProducts} className="bg-purple-500 text-white px-6 py-3 rounded-lg hover:bg-purple-600 font-semibold" title="Seçili Ürünleri Yazdır">🖨️ Yazdır</button>
+                        <button onClick={() => setModal('confirmDeleteSelected')} className="bg-yellow-500 text-white px-3 py-1.5 rounded-lg hover:bg-yellow-600 font-semibold text-sm">🔻 Sıfırla</button>
+                        <button onClick={() => setModal('confirmDeleteSelectedProducts')} className="bg-red-500 text-white px-3 py-1.5 rounded-lg hover:bg-red-600 font-semibold text-sm">🗑️ Sil</button>
                       </>
                     )}
-                    <button onClick={() => { setProductForm({ name: '', barcode: '', price: 0, cost_price: 0, stock: 0, min_stock: 10, category_id: '', depot: '', shelf: '' }); setSelected(null); setModal('productForm'); }} className="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600" title="Yeni Ürün Ekle">+ Yeni</button>
+                    <button onClick={printSelectedProducts} className="bg-purple-500 text-white px-3 py-1.5 rounded-lg hover:bg-purple-600 font-semibold text-sm">🖨️ Yazdır</button>
+                    <button onClick={() => setSelectedProducts([])} className="bg-gray-400 text-white px-3 py-1.5 rounded-lg hover:bg-gray-500 font-semibold text-sm">✕ Seçimi Kaldır</button>
                   </div>
-                </div>
+                )}
 
                 <div className="space-y-4 mb-4">
                   <SearchBar value={search} onChange={setSearch} onSearch={() => performSearch(search)} onClear={() => { setSearch(''); setSearchResults([]); }} searching={searching} />
@@ -2522,7 +2946,7 @@
                         <span className="text-sm text-gray-600">({selectedProducts.length} ürün seçildi)</span>
                       </div>
                       {filteredProducts.map(p => (
-                        <ProductCard key={`${p.id}-${p.depot}-${p.shelf}`} product={p} cart={cart} entryCart={entryCart} onSelect={toggleProductSelection} onAddToCart={addToCart} onAddToEntry={addToEntryCart} onStock={(pr) => { setSelected(pr); setStockMovement({ quantity: 0, type: 'in' }); setModal('stockConfirm'); }} onTransfer={(pr) => { setSelected(pr); setTransferForm({ depot: '', shelf: '', quantity: pr.current_stock }); setModal('transfer'); }} onEdit={(pr) => { setSelected(pr); setProductForm({ name: pr.name, barcode: pr.barcode || '', price: pr.price, min_stock: pr.min_stock || 10 }); setModal('productForm'); }} onDelete={(pr) => { setSelected(pr); setModal('confirmDelete'); }} isSelected={selectedProducts.includes(p.id)} />
+                        <ProductCard key={`${p.id}-${p.depot}-${p.shelf}`} product={p} cart={cart} entryCart={entryCart} onSelect={toggleProductSelection} onAddToCart={addToCart} onAddToEntry={addToEntryCart} onStock={(pr) => { setSelected(pr); setStockMovement({ quantity: 0, type: 'in' }); setModal('stockConfirm'); }} onTransfer={(pr) => { setSelected(pr); setTransferForm({ depot: '', shelf: '', quantity: pr.current_stock }); setModal('transfer'); }} onEdit={user?.role === 'admin' ? (pr) => { setSelected(pr); setProductForm({ name: pr.name, barcode: pr.barcode || '', price: pr.price, min_stock: pr.min_stock || 10 }); setModal('productForm'); } : null} onDelete={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDelete'); } : null} onDeleteProduct={user?.role === 'admin' ? (pr) => { setSelected(pr); setModal('confirmDeleteProduct'); } : null} isSelected={selectedProducts.includes(p.id)} />
                       ))}
                       {/* Pagination sadece arama yokken göster */}
                       {searchResults.length === 0 && (
@@ -2647,6 +3071,7 @@
                                   >
                                     ✏️
                                   </button>
+                                  {user?.role === 'admin' && (
                                   <button 
                                     onClick={() => { 
                                       setSelectedDepot(depot); 
@@ -2656,6 +3081,7 @@
                                   >
                                     🗑️
                                   </button>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -2699,6 +3125,7 @@
                                           >
                                             ✏️
                                           </button>
+                                          {user?.role === 'admin' && (
                                           <button 
                                             onClick={() => { 
                                               setSelectedShelf(shelf); 
@@ -2708,6 +3135,7 @@
                                           >
                                             🗑️
                                           </button>
+                                          )}
                                         </div>
                                       </div>
                                     );
@@ -2722,7 +3150,8 @@
                   )}
                 </div>
 
-                {/* Excel İşlemleri */}
+                {/* Excel İşlemleri - Sadece Admin */}
+                {user?.role === 'admin' && (
                 <div className="bg-white rounded-xl shadow-lg p-6">
                   <h2 className="text-xl font-bold mb-4">📊 Excel İşlemleri</h2>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2748,6 +3177,280 @@
                     <p className="text-sm text-gray-600">
                       <strong>Excel Format:</strong> Barkod, Ürün Adı, Fiyat, Min Stok sütunları olmalı
                     </p>
+                  </div>
+                </div>
+                )}
+              </div>
+            )}
+
+            {page === 'admin' && user?.role === 'admin' && (
+              <div className="space-y-6">
+                {/* Üst Bar */}
+                <div className="bg-gradient-to-r from-yellow-500 to-orange-600 rounded-xl p-6 text-white shadow-lg">
+                  <h1 className="text-2xl font-bold">👑 Admin Paneli</h1>
+                  <p>Kullanıcı yönetimi ve sistem ayarları</p>
+                </div>
+
+                {/* İstatistikler */}
+                <div className="grid grid-cols-4 gap-4">
+                  <div className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-xl p-6 shadow-lg">
+                    <p className="text-sm opacity-80">Toplam Kullanıcı</p>
+                    <p className="text-3xl font-bold mt-2">{allUsers.length}</p>
+                  </div>
+                  <div className="bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-xl p-6 shadow-lg">
+                    <p className="text-sm opacity-80">Onaylı</p>
+                    <p className="text-3xl font-bold mt-2">{allUsers.filter(u => u.is_approved).length}</p>
+                  </div>
+                  <div className="bg-gradient-to-r from-yellow-500 to-orange-500 text-white rounded-xl p-6 shadow-lg">
+                    <p className="text-sm opacity-80">Bekleyen</p>
+                    <p className="text-3xl font-bold mt-2">{allUsers.filter(u => !u.is_approved).length}</p>
+                  </div>
+                  <div className="bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-xl p-6 shadow-lg">
+                    <p className="text-sm opacity-80">Admin</p>
+                    <p className="text-3xl font-bold mt-2">{allUsers.filter(u => u.role === 'admin').length}</p>
+                  </div>
+                </div>
+
+                {/* Onay Bekleyen Kullanıcılar */}
+                {allUsers.filter(u => !u.is_approved).length > 0 && (
+                  <div className="bg-white rounded-xl shadow-lg p-6">
+                    <h2 className="text-xl font-bold mb-4 text-yellow-600">⏳ Onay Bekleyen Kullanıcılar</h2>
+                    <div className="space-y-3">
+                      {allUsers.filter(u => !u.is_approved).map(u => (
+                        <div key={u.id} className="flex justify-between items-center border-2 border-yellow-200 bg-yellow-50 rounded-lg p-4">
+                          <div>
+                            <p className="font-bold text-lg">{u.full_name}</p>
+                            <p className="text-gray-600">{u.email}</p>
+                            <p className="text-xs text-gray-400">Kayıt: {new Date(u.created_at).toLocaleString('tr-TR')}</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={() => approveUser(u.id, true)} 
+                              className="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 font-semibold"
+                            >
+                              ✅ Onayla
+                            </button>
+                            <button 
+                              onClick={() => deleteUser(u.id)} 
+                              className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 font-semibold"
+                            >
+                              🗑️ Sil
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Tüm Kullanıcılar */}
+                <div className="bg-white rounded-xl shadow-lg p-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-xl font-bold">👥 Tüm Kullanıcılar</h2>
+                    <button 
+                      onClick={loadUsers} 
+                      className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 font-semibold"
+                      disabled={loadingUsers}
+                    >
+                      {loadingUsers ? '⏳ Yükleniyor...' : '🔄 Yenile'}
+                    </button>
+                  </div>
+                  
+                  {loadingUsers ? (
+                    <div className="text-center py-8">
+                      <div className="text-4xl mb-4">⏳</div>
+                      <p>Kullanıcılar yükleniyor...</p>
+                    </div>
+                  ) : allUsers.length === 0 ? (
+                    <div className="text-center py-8">
+                      <div className="text-4xl mb-4">👥</div>
+                      <p>Henüz kullanıcı yok</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="border-b-2">
+                            <th className="text-left py-3 px-4">Kullanıcı</th>
+                            <th className="text-left py-3 px-4">E-posta</th>
+                            <th className="text-left py-3 px-4">Rol</th>
+                            <th className="text-left py-3 px-4">Durum</th>
+                            <th className="text-left py-3 px-4">Kayıt Tarihi</th>
+                            <th className="text-right py-3 px-4">İşlemler</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {allUsers.map(u => (
+                            <tr key={u.id} className="border-b hover:bg-gray-50">
+                              <td className="py-3 px-4">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-2xl">{u.role === 'admin' ? '👑' : '👤'}</span>
+                                  <span className="font-semibold">{u.full_name}</span>
+                                </div>
+                              </td>
+                              <td className="py-3 px-4 text-gray-600">{u.email}</td>
+                              <td className="py-3 px-4">
+                                <select 
+                                  value={u.role} 
+                                  onChange={(e) => changeUserRole(u.id, e.target.value)}
+                                  className="border rounded px-2 py-1"
+                                  disabled={u.id === user.id}
+                                >
+                                  <option value="user">👤 Kullanıcı</option>
+                                  <option value="viewer">👁️ Görüntüleyici</option>
+                                  <option value="admin">👑 Admin</option>
+                                </select>
+                              </td>
+                              <td className="py-3 px-4">
+                                {u.is_approved ? (
+                                  <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-semibold">✅ Onaylı</span>
+                                ) : (
+                                  <span className="bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full text-sm font-semibold">⏳ Bekliyor</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 text-gray-500 text-sm">
+                                {new Date(u.created_at).toLocaleDateString('tr-TR')}
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                <div className="flex gap-2 justify-end">
+                                  {!u.is_approved && (
+                                    <button 
+                                      onClick={() => approveUser(u.id, true)} 
+                                      className="bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600 text-sm"
+                                    >
+                                      ✅
+                                    </button>
+                                  )}
+                                  {u.is_approved && u.id !== user.id && (
+                                    <button 
+                                      onClick={() => approveUser(u.id, false)} 
+                                      className="bg-yellow-500 text-white px-3 py-1 rounded hover:bg-yellow-600 text-sm"
+                                      title="Onayı Kaldır"
+                                    >
+                                      ⏸️
+                                    </button>
+                                  )}
+                                  {u.id !== user.id && (
+                                    <button 
+                                      onClick={() => { if(confirm('Bu kullanıcıyı silmek istediğinize emin misiniz?')) deleteUser(u.id); }} 
+                                      className="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600 text-sm"
+                                    >
+                                      🗑️
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Rol Açıklamaları */}
+                <div className="bg-white rounded-xl shadow-lg p-6">
+                  <h2 className="text-xl font-bold mb-4">📋 Rol Açıklamaları</h2>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="border-2 border-purple-200 bg-purple-50 rounded-lg p-4">
+                      <h3 className="font-bold text-purple-800 mb-2">👑 Admin</h3>
+                      <ul className="text-sm text-gray-600 space-y-1">
+                        <li>• Tüm işlemleri yapabilir</li>
+                        <li>• Kullanıcı onaylayabilir</li>
+                        <li>• Rol değiştirebilir</li>
+                        <li>• Kullanıcı silebilir</li>
+                      </ul>
+                    </div>
+                    <div className="border-2 border-blue-200 bg-blue-50 rounded-lg p-4">
+                      <h3 className="font-bold text-blue-800 mb-2">👤 Kullanıcı</h3>
+                      <ul className="text-sm text-gray-600 space-y-1">
+                        <li>• Satış yapabilir</li>
+                        <li>• Stok girişi yapabilir</li>
+                        <li>• Ürün ekleyebilir</li>
+                        <li>• Raporları görebilir</li>
+                      </ul>
+                    </div>
+                    <div className="border-2 border-gray-200 bg-gray-50 rounded-lg p-4">
+                      <h3 className="font-bold text-gray-800 mb-2">👁️ Görüntüleyici</h3>
+                      <ul className="text-sm text-gray-600 space-y-1">
+                        <li>• Ürünleri görebilir</li>
+                        <li>• Raporları görebilir</li>
+                        <li>• Değişiklik yapamaz</li>
+                        <li>• Salt okunur erişim</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tehlikeli İşlemler */}
+                <div className="bg-white rounded-xl shadow-lg p-6 border-2 border-red-200">
+                  <h2 className="text-xl font-bold mb-4 text-red-600">⚠️ Tehlikeli İşlemler</h2>
+                  <p className="text-gray-600 mb-4 text-sm">Bu işlemler geri alınamaz! Dikkatli kullanın.</p>
+                  
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-red-50 border-2 border-red-200 rounded-lg p-4">
+                      <h4 className="font-bold text-red-800 mb-2">🗑️ Tüm Ürünleri Sil</h4>
+                      <p className="text-xs text-gray-600 mb-3">Tüm ürünler ve stok bilgileri silinir</p>
+                      <button 
+                        onClick={() => { 
+                          if(confirm('⚠️ TÜM ÜRÜNLER SİLİNECEK!\n\nBu işlem geri alınamaz. Devam etmek istiyor musunuz?')) {
+                            if(confirm('🚨 EMIN MISINIZ?\n\nTüm ürün ve stok verileri kalıcı olarak silinecek!')) {
+                              deleteAllProducts();
+                            }
+                          }
+                        }}
+                        className="w-full bg-red-500 text-white px-3 py-2 rounded-lg hover:bg-red-600 font-semibold text-sm"
+                      >
+                        🗑️ Ürünleri Sil
+                      </button>
+                    </div>
+                    
+                    <div className="bg-orange-50 border-2 border-orange-200 rounded-lg p-4">
+                      <h4 className="font-bold text-orange-800 mb-2">📊 Tüm Satışları Sil</h4>
+                      <p className="text-xs text-gray-600 mb-3">Tüm satış geçmişi silinir</p>
+                      <button 
+                        onClick={() => { 
+                          if(confirm('⚠️ TÜM SATIŞLAR SİLİNECEK!\n\nBu işlem geri alınamaz. Devam etmek istiyor musunuz?')) {
+                            deleteAllSales();
+                          }
+                        }}
+                        className="w-full bg-orange-500 text-white px-3 py-2 rounded-lg hover:bg-orange-600 font-semibold text-sm"
+                      >
+                        🗑️ Satışları Sil
+                      </button>
+                    </div>
+                    
+                    <div className="bg-yellow-50 border-2 border-yellow-200 rounded-lg p-4">
+                      <h4 className="font-bold text-yellow-800 mb-2">📦 Tüm Stokları Sil</h4>
+                      <p className="text-xs text-gray-600 mb-3">Stoklar sıfırlanır, ürünler kalır</p>
+                      <button 
+                        onClick={() => { 
+                          if(confirm('⚠️ TÜM STOKLAR SİLİNECEK!\n\nÜrünler kalacak ama stok bilgileri sıfırlanacak. Devam?')) {
+                            deleteAllInventory();
+                          }
+                        }}
+                        className="w-full bg-yellow-500 text-white px-3 py-2 rounded-lg hover:bg-yellow-600 font-semibold text-sm"
+                      >
+                        🗑️ Stokları Sil
+                      </button>
+                    </div>
+                    
+                    <div className="bg-gray-800 border-2 border-gray-900 rounded-lg p-4">
+                      <h4 className="font-bold text-white mb-2">💣 FABRİKA SIFIRLA</h4>
+                      <p className="text-xs text-gray-300 mb-3">TÜM VERİLER silinir!</p>
+                      <button 
+                        onClick={() => { 
+                          if(confirm('🚨 DİKKAT! FABRİKA SIFIRLAMA!\n\nTÜM VERİLER (ürünler, satışlar, stoklar, depolar) SİLİNECEK!\n\nBu işlem GERİ ALINAMAZ!')) {
+                            if(confirm('⚠️ SON UYARI!\n\n"SIFIRLA" yazarak onaylayın...') && prompt('Onaylamak için "SIFIRLA" yazın:') === 'SIFIRLA') {
+                              resetAllData();
+                            }
+                          }
+                        }}
+                        className="w-full bg-gray-900 text-white px-3 py-2 rounded-lg hover:bg-black font-semibold text-sm border border-red-500"
+                      >
+                        💣 SIFIRLA
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2962,13 +3665,26 @@
                       <div key={sale.id} className="border-2 rounded-xl p-4">
                         <div className="flex justify-between mb-2">
                           <div>
-                            <h3 className="font-bold">Satış #{sale.id}</h3>
+                            <h3 className="font-bold">Satış #{sale.id.slice(0,8)}</h3>
                             <p className="text-sm text-gray-600">{formatDate(sale.created_at)}</p>
                             <p className="text-sm text-blue-600 font-medium">👤 {sale.profiles?.full_name || sale.profiles?.email || 'Bilinmiyor'}</p>
                           </div>
                           <div className="flex items-center gap-3">
                             <span className="font-bold text-lg text-green-600">{formatCurrency(sale.total_amount)}</span>
                             <button onClick={() => printSale(sale)} className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 font-semibold">🖨️ Yazdır</button>
+                            {user?.role === 'admin' && (
+                              <button 
+                                onClick={() => { 
+                                  if(confirm(`Bu satışı silmek istediğinize emin misiniz?\n\nTutar: ${formatCurrency(sale.total_amount)}\nTarih: ${formatDate(sale.created_at)}`)) {
+                                    deleteSale(sale.id);
+                                  }
+                                }} 
+                                className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 font-semibold"
+                                title="Satışı Sil"
+                              >
+                                🗑️
+                              </button>
+                            )}
                           </div>
                         </div>
                         <div className="bg-gray-50 rounded-lg p-3 space-y-1">
@@ -3364,6 +4080,26 @@
             </div>
           )}
 
+          {/* ÜRÜN KALICI SİLME MODALI (Admin) */}
+          {modal === 'confirmDeleteProduct' && selected && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-xl p-6 w-full max-w-md">
+                <h2 className="text-2xl font-bold mb-4 text-red-600">🗑️ Ürünü Kalıcı Sil</h2>
+                <div className="bg-red-50 border-2 border-red-200 rounded-lg p-4 mb-4">
+                  <p className="text-gray-700">Bu ürünü kalıcı olarak silmek istediğinize emin misiniz?</p>
+                  <p className="font-bold text-lg mt-2">{selected.name}</p>
+                  <p className="text-sm text-gray-600">Barkod: {selected.barcode || '-'}</p>
+                  <p className="text-sm text-gray-600">Mevcut Stok: {selected.current_stock} adet</p>
+                </div>
+                <p className="text-red-600 text-sm mb-4 font-semibold">⚠️ Bu işlem geri alınamaz! Ürün ve tüm stok bilgileri silinecek.</p>
+                <div className="flex gap-3">
+                  <button onClick={() => deleteProductPermanent(selected)} className="flex-1 bg-red-500 text-white py-3 rounded-lg hover:bg-red-600 font-bold">🗑️ Evet, Kalıcı Sil</button>
+                  <button onClick={() => { setModal(''); setSelected(null); }} className="flex-1 bg-gray-200 py-3 rounded-lg hover:bg-gray-300">İptal</button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {modal === 'confirmDeleteSelected' && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
               <div className="bg-white rounded-xl p-6 w-full max-w-md">
@@ -3375,6 +4111,24 @@
                 <p className="text-orange-600 text-sm mb-4">ℹ️ Ürünler silinmeyecek, sadece stokları 0 olacak.</p>
                 <div className="flex gap-3">
                   <button onClick={deleteSelectedProducts} className="flex-1 bg-orange-500 text-white py-3 rounded-lg hover:bg-orange-600 font-bold">🔻 Evet, Hepsini Sıfırla</button>
+                  <button onClick={() => setModal('')} className="flex-1 bg-gray-200 py-3 rounded-lg hover:bg-gray-300">İptal</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TOPLU ÜRÜN KALICI SİLME MODALI (Admin) */}
+          {modal === 'confirmDeleteSelectedProducts' && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-xl p-6 w-full max-w-md">
+                <h2 className="text-2xl font-bold mb-4 text-red-600">🗑️ Toplu Kalıcı Silme</h2>
+                <div className="bg-red-50 border-2 border-red-200 rounded-lg p-4 mb-4">
+                  <p className="text-gray-700">Seçili tüm ürünleri kalıcı olarak silmek istediğinize emin misiniz?</p>
+                  <p className="font-bold text-3xl mt-2 text-red-600">{selectedProducts.length} ürün</p>
+                </div>
+                <p className="text-red-600 text-sm mb-4 font-semibold">⚠️ Bu işlem geri alınamaz! Ürünler ve tüm stok bilgileri kalıcı olarak silinecek.</p>
+                <div className="flex gap-3">
+                  <button onClick={deleteSelectedProductsPermanent} className="flex-1 bg-red-500 text-white py-3 rounded-lg hover:bg-red-600 font-bold">🗑️ Evet, Kalıcı Sil</button>
                   <button onClick={() => setModal('')} className="flex-1 bg-gray-200 py-3 rounded-lg hover:bg-gray-300">İptal</button>
                 </div>
               </div>
